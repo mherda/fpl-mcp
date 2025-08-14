@@ -11,6 +11,7 @@ import {
   topByPrice,
   POSITION_ID_TO_SHORT,
   getFixtureDifficulty,
+  getUnavailablePlayers,
 } from "./cache.js";
 
 export function registerFplTools(server: McpServer) {
@@ -324,6 +325,76 @@ export function registerFplTools(server: McpServer) {
             {
               type: "text",
               text: JSON.stringify({ error: "Failed to get fixture difficulty", details: String(error) }, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool 6: unavailable_players
+  server.registerTool(
+    "unavailable_players",
+    {
+      title: "Get injured and unavailable players",
+      description: "Returns players who are injured, suspended, doubtful, or otherwise unavailable. Includes injury news and availability percentages.",
+      inputSchema: {
+        position: z.enum(["1", "2", "3", "4", "GKP", "DEF", "MID", "FWD"]).optional().describe("Position filter: 1=GKP, 2=DEF, 3=MID, 4=FWD"),
+        team: z.union([z.number().int().positive(), z.string().min(2)]).optional().describe("Team filter (ID or short name like 'ARS')"),
+        includeDoubtful: z.boolean().default(true).describe("Include players with injury concerns but still available"),
+      },
+    },
+    async ({ position, team, includeDoubtful }) => {
+      try {
+        const boot = await getBootstrapCached({ allowStale: true });
+        
+        const unavailablePlayers = getUnavailablePlayers(boot, {
+          position: position as any,
+          team: team as any,
+          includeDoubtful: includeDoubtful
+        });
+
+        // Group by status for better organization
+        const grouped = {
+          injured: unavailablePlayers.filter((p: any) => p.status === "i" || p.status === "d"),
+          suspended: unavailablePlayers.filter((p: any) => p.status === "s"),
+          unavailable: unavailablePlayers.filter((p: any) => p.status === "u" || p.status === "n"),
+          doubtful: unavailablePlayers.filter((p: any) => p.status === "a" && (p.news || p.chanceOfPlayingNextRound < 100))
+        };
+
+        const summary = {
+          totalCount: unavailablePlayers.length,
+          injured: grouped.injured.length,
+          suspended: grouped.suspended.length, 
+          unavailable: grouped.unavailable.length,
+          doubtful: grouped.doubtful.length
+        };
+
+        const result = {
+          summary,
+          players: {
+            injured: grouped.injured,
+            suspended: grouped.suspended,
+            unavailable: grouped.unavailable,
+            doubtful: grouped.doubtful
+          }
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "Failed to get unavailable players", details: String(error) }, null, 2),
             },
           ],
           isError: true,

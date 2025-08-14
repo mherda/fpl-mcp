@@ -232,3 +232,87 @@ export async function getFixtureDifficulty(teamIds?: number[], gameweeks: number
     throw error;
   }
 }
+
+/**
+ * Get injured and unavailable players
+ */
+export function getUnavailablePlayers(boot: any, filters?: {
+  position?: number | "GKP" | "DEF" | "MID" | "FWD";
+  team?: number | string;
+  includeDoubtful?: boolean; // Include players with reduced chance of playing
+}) {
+  // Resolve position filter
+  let positionId: number | undefined;
+  if (typeof filters?.position === "number") positionId = filters.position;
+  if (typeof filters?.position === "string") {
+    positionId = { GKP: 1, DEF: 2, MID: 3, FWD: 4 }[filters.position];
+  }
+
+  // Resolve team filter
+  let teamId: number | undefined;
+  if (typeof filters?.team === "number") teamId = filters.team;
+  if (typeof filters?.team === "string") {
+    const team = boot.teams.find((t: any) => 
+      t.short_name.toLowerCase() === String(filters.team).toLowerCase() ||
+      t.name.toLowerCase() === String(filters.team).toLowerCase()
+    );
+    teamId = team?.id;
+  }
+
+  const unavailablePlayers = boot.elements
+    .filter((p: any) => {
+      // Apply position filter
+      if (positionId && p.element_type !== positionId) return false;
+      
+      // Apply team filter  
+      if (teamId && p.team !== teamId) return false;
+      
+      // Check availability status
+      const hasNews = p.news && p.news.trim().length > 0;
+      const isUnavailable = p.status !== "a"; // not available
+      const isDoubtful = p.chance_of_playing_next_round !== null && p.chance_of_playing_next_round < 100;
+      
+      if (isUnavailable) return true;
+      if (hasNews && (filters?.includeDoubtful !== false)) return true;
+      if (isDoubtful && filters?.includeDoubtful) return true;
+      
+      return false;
+    })
+    .map((p: any) => ({
+      id: p.id,
+      web_name: p.web_name,
+      first_name: p.first_name,
+      second_name: p.second_name,
+      team: teamShort(boot, p.team),
+      position: POSITION_ID_TO_SHORT[p.element_type],
+      status: p.status,
+      statusText: getStatusText(p.status),
+      news: p.news || "",
+      chanceOfPlayingNextRound: p.chance_of_playing_next_round,
+      price: priceLabel(p.now_cost),
+      totalPoints: p.total_points,
+      selectedByPercent: p.selected_by_percent
+    }))
+    .sort((a: any, b: any) => {
+      // Sort by severity: unavailable first, then doubtful, then by ownership
+      if (a.status !== b.status) {
+        if (a.status !== "a") return -1;
+        if (b.status !== "a") return 1;
+      }
+      return Number(b.selectedByPercent) - Number(a.selectedByPercent);
+    });
+
+  return unavailablePlayers;
+}
+
+function getStatusText(status: string): string {
+  switch (status) {
+    case "a": return "Available";
+    case "d": return "Doubtful";
+    case "i": return "Injured"; 
+    case "n": return "Not available";
+    case "s": return "Suspended";
+    case "u": return "Unavailable";
+    default: return `Status: ${status}`;
+  }
+}
