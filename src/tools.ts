@@ -12,8 +12,15 @@ import {
   POSITION_ID_TO_SHORT,
 } from "./cache.js";
 
-/** Always return a string for MCP text content */
-const asJsonText = (v: unknown) => JSON.stringify(v); // or JSON.stringify(v, null, 2) if you prefer pretty
+/** Always return a string for MCP text content - with error handling */
+const asJsonText = (v: unknown) => {
+  try {
+    return JSON.stringify(v);
+  } catch (error) {
+    console.error("JSON.stringify error:", error);
+    return JSON.stringify({ error: "Failed to serialize response", details: String(error) });
+  }
+};
 
 /* ---------- Zod schemas for MCP registerTool ---------- */
 const GetPlayerInfoInputSchema = z.object({
@@ -69,25 +76,32 @@ export function registerFplTools(server: McpServer) {
     async (input) => {
       const args = SearchPlayersInputSchema.parse(input);
       const boot = await getBootstrapCached({ allowStale: true });
-      const results = searchPlayers(boot, args.q, {
+      const searchResults = searchPlayers(boot, args.q, {
         position: args.position as any,
         team: args.team as any,
         limit: args.limit,
-      }).map((p: any) => ({
-        id: p.id,
-        web_name: p.web_name,
-        first_name: p.first_name,
-        second_name: p.second_name,
-        team: teamShort(boot, p.team),
-        position: POSITION_ID_TO_SHORT[p.element_type],
-        now_cost: p.now_cost,
-        price_label: priceLabel(p.now_cost),
-        status: p.status,
-        total_points: p.total_points,
-        selected_by_percent: p.selected_by_percent,
-      }));
+      });
+      
+      const results = searchResults.map((p: any) => {
+        // Create completely new objects to avoid any circular references
+        return {
+          id: Number(p.id),
+          web_name: String(p.web_name || ""),
+          first_name: String(p.first_name || ""),
+          second_name: String(p.second_name || ""),
+          team: String(teamShort(boot, p.team) || ""),
+          position: String(POSITION_ID_TO_SHORT[p.element_type] || ""),
+          now_cost: Number(p.now_cost || 0),
+          price_label: String(priceLabel(p.now_cost) || ""),
+          status: String(p.status || ""),
+          total_points: Number(p.total_points || 0),
+          selected_by_percent: String(p.selected_by_percent || "0"),
+        };
+      });
 
-      return { content: [{ type: "text", text: asJsonText({ count: results.length, results }) }] };
+      const responseData = { count: results.length, results };
+      console.log("Search results about to be serialized:", responseData);
+      return { content: [{ type: "text", text: asJsonText(responseData) }] };
     }
   );
 
@@ -117,21 +131,21 @@ export function registerFplTools(server: McpServer) {
       if (!p) return { isError: true, content: [{ type: "text", text: "Player not found" }] };
 
       const info = {
-        id: p.id,
-        web_name: p.web_name,
-        first_name: p.first_name,
-        second_name: p.second_name,
-        team: teamShort(boot, p.team),
-        position: POSITION_ID_TO_SHORT[p.element_type],
-        status: p.status,
-        chance_of_playing_next_round: p.chance_of_playing_next_round,
-        news: p.news,
-        now_cost: p.now_cost,
-        price_label: priceLabel(p.now_cost),
-        selected_by_percent: p.selected_by_percent,
-        form: p.form,
-        points_per_game: p.points_per_game,
-        total_points: p.total_points,
+        id: Number(p.id),
+        web_name: String(p.web_name || ""),
+        first_name: String(p.first_name || ""),
+        second_name: String(p.second_name || ""),
+        team: String(teamShort(boot, p.team) || ""),
+        position: String(POSITION_ID_TO_SHORT[p.element_type] || ""),
+        status: String(p.status || ""),
+        chance_of_playing_next_round: p.chance_of_playing_next_round ? Number(p.chance_of_playing_next_round) : null,
+        news: String(p.news || ""),
+        now_cost: Number(p.now_cost || 0),
+        price_label: String(priceLabel(p.now_cost) || ""),
+        selected_by_percent: String(p.selected_by_percent || "0"),
+        form: String(p.form || "0"),
+        points_per_game: String(p.points_per_game || "0"),
+        total_points: Number(p.total_points || 0),
       };
 
       return { content: [{ type: "text", text: asJsonText(info) }] };
@@ -150,12 +164,12 @@ export function registerFplTools(server: McpServer) {
       const args = TopByPriceInputSchema.parse(input);
       const boot = await getBootstrapCached({ allowStale: true });
       const rows = topByPrice(boot, Number(args.position), args.limit).map((p: any) => ({
-        id: p.id,
-        name: p.web_name,
-        team: teamShort(boot, p.team),
-        position: POSITION_ID_TO_SHORT[p.element_type],
-        price: priceLabel(p.now_cost),
-        total_points: p.total_points,
+        id: Number(p.id),
+        name: String(p.web_name || ""),
+        team: String(teamShort(boot, p.team) || ""),
+        position: String(POSITION_ID_TO_SHORT[p.element_type] || ""),
+        price: String(priceLabel(p.now_cost) || ""),
+        total_points: Number(p.total_points || 0),
       }));
 
       return { content: [{ type: "text", text: asJsonText({ position: args.position, rows }) }] };
