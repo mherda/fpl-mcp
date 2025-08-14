@@ -7,22 +7,6 @@ import { ratelimit } from "../src/rateLimit.js";
 
 const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN ?? "*";
 
-async function ensureBodyString(req: VercelRequest): Promise<string> {
-  // Already a JSON string?
-  if (typeof req.body === "string") return req.body;
-
-  // Buffer?
-  if (Buffer.isBuffer(req.body)) return req.body.toString("utf8");
-
-  // Parsed object?
-  if (req.body && typeof req.body === "object") return JSON.stringify(req.body);
-
-  // Fallback: read raw request stream
-  const chunks: Buffer[] = [];
-  for await (const chunk of req as any) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString("utf8");
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // --- CORS preflight ---
   if (req.method === "OPTIONS") {
@@ -45,7 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 
-  // --- Rate limit (admin bypass supported) ---
+  // --- Rate limit (admin bypass supported via Authorization: Bearer <MCP_ADMIN_TOKEN>) ---
   const adminBypass =
     process.env.MCP_ADMIN_TOKEN && req.headers.authorization === `Bearer ${process.env.MCP_ADMIN_TOKEN}`;
 
@@ -70,7 +54,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } catch (e) {
       console.error("ratelimit error:", e);
-      // Continue anyway; don't block requests on RL misconfig
+      // Don't block requests if RL is misconfigured
     }
   }
 
@@ -78,13 +62,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const server = new McpServer({ name: "fpl-mcp", version: "1.0.0" });
     registerFplTools(server);
 
+    // Stateless per-request transport for serverless
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
-    // IMPORTANT: always pass a *JSON string* body to the MCP transport
-    const body = await ensureBodyString(req);
-
     await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    // IMPORTANT: let the transport read+parse the HTTP request itself
+    await transport.handleRequest(req, res);
   } catch (err) {
     console.error("MCP handler error:", err);
     if (!res.headersSent) {
