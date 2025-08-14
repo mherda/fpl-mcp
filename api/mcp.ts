@@ -3,12 +3,28 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerFplTools } from "../src/tools.js";
-import { ratelimit } from "../src/ratelimit.js";
+import { ratelimit } from "../src/rateLimit.js";
 
 const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN ?? "*";
 
+async function ensureBodyString(req: VercelRequest): Promise<string> {
+  // Already a JSON string?
+  if (typeof req.body === "string") return req.body;
+
+  // Buffer?
+  if (Buffer.isBuffer(req.body)) return req.body.toString("utf8");
+
+  // Parsed object?
+  if (req.body && typeof req.body === "object") return JSON.stringify(req.body);
+
+  // Fallback: read raw request stream
+  const chunks: Buffer[] = [];
+  for await (const chunk of req as any) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // --- CORS (preflight) ---
+  // --- CORS preflight ---
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -29,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 
-  // ---- Rate limit (admin bypass supported via Authorization: Bearer <MCP_ADMIN_TOKEN>) ---
+  // --- Rate limit (admin bypass supported) ---
   const adminBypass =
     process.env.MCP_ADMIN_TOKEN && req.headers.authorization === `Bearer ${process.env.MCP_ADMIN_TOKEN}`;
 
@@ -53,8 +69,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(429).json({ error: "Rate limit exceeded. Try again later." });
       }
     } catch (e) {
-      // If ratelimit misconfigured, don't hard-fail requests
       console.error("ratelimit error:", e);
+      // Continue anyway; don't block requests on RL misconfig
     }
   }
 
@@ -62,26 +78,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const server = new McpServer({ name: "fpl-mcp", version: "1.0.0" });
     registerFplTools(server);
 
-    // Stateless per-request transport for serverless
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
-    /**
-     * IMPORTANT:
-     * - If req.body is already a string (raw JSON), pass that.
-     * - If it's a Buffer, convert to string.
-     * - Otherwise, pass `undefined` so the transport will read the Node stream itself.
-     *   (Avoid JSON.stringify-ing objects here — that can double-encode and
-     *   lead to "expected object, received string" validation errors.)
-     */
-    let bodyArg: string | undefined = undefined;
-    if (typeof req.body === "string") {
-      bodyArg = req.body;
-    } else if (Buffer.isBuffer(req.body)) {
-      bodyArg = req.body.toString("utf8");
-    } // else leave undefined
+    // IMPORTANT: always pass a *JSON string* body to the MCP transport
+    const body = await ensureBodyString(req);
 
     await server.connect(transport);
-    await transport.handleRequest(req, res, bodyArg);
+    await transport.handleRequest(req, res, body);
   } catch (err) {
     console.error("MCP handler error:", err);
     if (!res.headersSent) {
