@@ -12,6 +12,9 @@ import {
   POSITION_ID_TO_SHORT,
 } from "./cache.js";
 
+/** Always return a string for MCP text content */
+const asJsonText = (v: unknown) => JSON.stringify(v); // or JSON.stringify(v, null, 2) if you prefer pretty
+
 /* ---------- raw shapes for MCP registerTool ---------- */
 const GetPlayerInfoInput = {
   id: z.number().int().positive().optional(),
@@ -34,7 +37,7 @@ const RefreshBootstrapInput = {} as const;
 
 /* ---------- registration ---------- */
 export function registerFplTools(server: McpServer) {
-  // 1) search_players — fuzzy search & filters → list of candidates with ids
+  // search_players
   server.registerTool(
     "search_players",
     {
@@ -63,11 +66,12 @@ export function registerFplTools(server: McpServer) {
         total_points: p.total_points,
         selected_by_percent: p.selected_by_percent,
       }));
-      return { content: [{ type: "text", text: JSON.stringify({ count: results.length, results }) }] };
+
+      return { content: [{ type: "text", text: asJsonText({ count: results.length, results }) }] };
     }
   );
 
-  // 2) get_player_info — by id OR name → single rich info object
+  // get_player_info
   server.registerTool(
     "get_player_info",
     {
@@ -77,16 +81,14 @@ export function registerFplTools(server: McpServer) {
       inputSchema: GetPlayerInfoInput,
     },
     async (input) => {
-      const parsed = z.object(GetPlayerInfoInput).parse(input);
+      const args = z.object(GetPlayerInfoInput).parse(input);
       const boot = await getBootstrapCached({ allowStale: true });
 
       let p: any | null = null;
-      if (parsed.id) p = findPlayerById(boot, parsed.id);
-      if (!p && parsed.name) p = resolvePlayerByName(boot, parsed.name);
+      if (args.id) p = findPlayerById(boot, args.id);
+      if (!p && args.name) p = resolvePlayerByName(boot, args.name);
 
-      if (!p) {
-        return { isError: true, content: [{ type: "text", text: "Player not found" }] };
-      }
+      if (!p) return { isError: true, content: [{ type: "text", text: "Player not found" }] };
 
       const info = {
         id: p.id,
@@ -95,7 +97,7 @@ export function registerFplTools(server: McpServer) {
         second_name: p.second_name,
         team: teamShort(boot, p.team),
         position: POSITION_ID_TO_SHORT[p.element_type],
-        status: p.status, // 'a','d','i','s','n'
+        status: p.status,
         chance_of_playing_next_round: p.chance_of_playing_next_round,
         news: p.news,
         now_cost: p.now_cost,
@@ -106,11 +108,11 @@ export function registerFplTools(server: McpServer) {
         total_points: p.total_points,
       };
 
-      return { content: [{ type: "text", text: JSON.stringify(info) }] };
+      return { content: [{ type: "text", text: asJsonText(info) }] };
     }
   );
 
-  // 3) (kept) top_by_price — unchanged
+  // top_by_price
   server.registerTool(
     "top_by_price",
     {
@@ -129,11 +131,12 @@ export function registerFplTools(server: McpServer) {
         price: priceLabel(p.now_cost),
         total_points: p.total_points,
       }));
-      return { content: [{ type: "text", text: JSON.stringify({ position: args.position, rows }) }] };
+
+      return { content: [{ type: "text", text: asJsonText({ position: args.position, rows }) }] };
     }
   );
 
-  // 4) (kept) refresh_bootstrap — unchanged
+  // refresh_bootstrap (unchanged)
   server.registerTool(
     "refresh_bootstrap",
     {
@@ -144,19 +147,13 @@ export function registerFplTools(server: McpServer) {
     async () => {
       const { fetchUpstream, setBootstrap } = await import("./cache.js");
       const env = await fetchUpstream().then(setBootstrap);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              fetchedAt: new Date(env.fetchedAt).toISOString(),
-              elements: env.payload.elements?.length ?? 0,
-              teams: env.payload.teams?.length ?? 0,
-              events: env.payload.events?.length ?? 0,
-            }),
-          },
-        ],
+      const meta = {
+        fetchedAt: new Date(env.fetchedAt).toISOString(),
+        elements: env.payload.elements?.length ?? 0,
+        teams: env.payload.teams?.length ?? 0,
+        events: env.payload.events?.length ?? 0,
       };
+      return { content: [{ type: "text", text: asJsonText(meta) }] };
     }
   );
 }
