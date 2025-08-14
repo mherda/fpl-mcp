@@ -28,12 +28,20 @@ export function registerFplTools(server: McpServer) {
     },
     async ({ q, position, team, limit }) => {
       try {
+        console.log("Tool input:", { q, position, team, limit });
         const boot = await getBootstrapCached({ allowStale: true });
+        console.log("Boot data type:", typeof boot, "has elements:", !!boot?.elements);
+        
+        if (!boot || !boot.elements) {
+          throw new Error("Bootstrap data is invalid or missing elements");
+        }
+        
         const searchResults = searchPlayers(boot, q, {
           position: position as any,
           team: team as any,
           limit: limit,
         });
+        console.log("Search results length:", searchResults?.length);
         
         const results = searchResults.map((p: any) => ({
           id: Number(p.id),

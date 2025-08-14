@@ -13,21 +13,52 @@ export async function fetchUpstream(): Promise<any> {
 
 export async function setBootstrap(payload: any) {
   const envelope = { payload, fetchedAt: Date.now() };
-  await kv.set(KEY, JSON.stringify(envelope), { ex: TTL_SECONDS * 2 });
+  try {
+    console.log("Setting bootstrap - payload has elements:", !!payload?.elements, "count:", payload?.elements?.length);
+    await kv.set(KEY, JSON.stringify(envelope), { ex: TTL_SECONDS * 2 });
+    console.log("Bootstrap stored successfully");
+  } catch (error) {
+    console.error("Failed to store bootstrap:", error);
+    throw error;
+  }
   return envelope;
 }
 
 export async function getBootstrapCached(opts: { allowStale?: boolean } = {}) {
-  const raw = await kv.get<string>(KEY);
+  // Get from KV without type constraint to see what we actually get
+  const raw = await kv.get(KEY);
+  console.log("KV raw data type:", typeof raw);
+  
   if (raw) {
-    const env = JSON.parse(raw) as { payload: any; fetchedAt: number };
-    const fresh = (Date.now() - env.fetchedAt) / 1000 < TTL_SECONDS;
-    if (fresh) return env.payload;
-    if (opts.allowStale !== false) {
-      if (!inflight) inflight = fetchUpstream().then(setBootstrap).finally(() => (inflight = null));
-      return env.payload; // serve stale, refresh in background
+    try {
+      // Handle different return types from Vercel KV
+      let env: { payload: any; fetchedAt: number };
+      
+      if (typeof raw === "string") {
+        // KV returned string, parse it
+        env = JSON.parse(raw);
+      } else if (typeof raw === "object" && raw !== null) {
+        // KV returned object directly 
+        env = raw as { payload: any; fetchedAt: number };
+      } else {
+        throw new Error(`Unexpected KV data type: ${typeof raw}`);
+      }
+      
+      console.log("Parsed env - has payload:", !!env?.payload, "elements:", env?.payload?.elements?.length);
+      
+      const fresh = (Date.now() - env.fetchedAt) / 1000 < TTL_SECONDS;
+      if (fresh) return env.payload;
+      if (opts.allowStale !== false) {
+        if (!inflight) inflight = fetchUpstream().then(setBootstrap).finally(() => (inflight = null));
+        return env.payload; // serve stale, refresh in background
+      }
+    } catch (parseError) {
+      console.error("Data parsing error:", parseError);
+      console.error("Raw data:", raw);
+      // Fall through to fetch fresh data
     }
   }
+  
   if (!inflight) inflight = fetchUpstream().then(setBootstrap).finally(() => (inflight = null));
   return (await inflight).payload;
 }
