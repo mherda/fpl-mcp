@@ -10,6 +10,7 @@ import {
   teamShort,
   topByPrice,
   POSITION_ID_TO_SHORT,
+  getFixtureDifficulty,
 } from "./cache.js";
 
 export function registerFplTools(server: McpServer) {
@@ -28,20 +29,12 @@ export function registerFplTools(server: McpServer) {
     },
     async ({ q, position, team, limit }) => {
       try {
-        console.log("Tool input:", { q, position, team, limit });
         const boot = await getBootstrapCached({ allowStale: true });
-        console.log("Boot data type:", typeof boot, "has elements:", !!boot?.elements);
-        
-        if (!boot || !boot.elements) {
-          throw new Error("Bootstrap data is invalid or missing elements");
-        }
-        
         const searchResults = searchPlayers(boot, q, {
           position: position as any,
           team: team as any,
           limit: limit,
         });
-        console.log("Search results length:", searchResults?.length);
         
         const results = searchResults.map((p: any) => ({
           id: Number(p.id),
@@ -240,6 +233,97 @@ export function registerFplTools(server: McpServer) {
             {
               type: "text",
               text: JSON.stringify({ error: "Failed to refresh bootstrap", details: String(error) }, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool 5: fixture_difficulty
+  server.registerTool(
+    "fixture_difficulty",
+    {
+      title: "Get fixture difficulty for teams",
+      description: "Returns fixture difficulty ratings for teams over the next few gameweeks. Lower difficulty = easier opponent. Difficulty scale typically 2-5.",
+      inputSchema: {
+        teams: z.array(z.union([z.number().int().positive(), z.string().min(2)])).optional().describe("Team IDs or short names (e.g., [1, 2] or ['ARS', 'CHE']). If not provided, returns all teams."),
+        gameweeks: z.number().int().min(1).max(10).default(3).describe("Number of upcoming gameweeks to analyze"),
+      },
+    },
+    async ({ teams, gameweeks }) => {
+      try {
+        const bootstrap = await getBootstrapCached({ allowStale: true });
+        
+        // Convert team names to IDs if needed
+        let teamIds: number[] | undefined;
+        if (teams && teams.length > 0) {
+          teamIds = teams.map((team: any) => {
+            if (typeof team === "number") return team;
+            // Find team by short name or full name
+            const foundTeam = bootstrap.teams.find((t: any) => 
+              t.short_name.toLowerCase() === String(team).toLowerCase() ||
+              t.name.toLowerCase() === String(team).toLowerCase()
+            );
+            return foundTeam?.id || null;
+          }).filter((id: any) => id !== null);
+          
+          if (teamIds.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ error: "No valid teams found" }, null, 2),
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
+        const difficultyData = await getFixtureDifficulty(teamIds, gameweeks);
+        
+        // Enhance with team names for readability
+        const enhancedData = {
+          gameweeks: difficultyData.gameweeks,
+          teams: {} as any
+        };
+
+        Object.entries(difficultyData.teamFixtures).forEach(([teamId, fixtures]: [string, any]) => {
+          const team = bootstrap.teams.find((t: any) => t.id === Number(teamId));
+          const teamName = team ? team.short_name : `Team ${teamId}`;
+          
+          enhancedData.teams[teamName] = {
+            id: Number(teamId),
+            fixtures: fixtures.map((fixture: any) => {
+              const opponent = bootstrap.teams.find((t: any) => t.id === fixture.opponent);
+              return {
+                gameweek: fixture.event,
+                opponent: opponent ? opponent.short_name : `Team ${fixture.opponent}`,
+                isHome: fixture.isHome,
+                difficulty: fixture.difficulty,
+                kickoffTime: fixture.kickoffTime
+              };
+            }),
+            averageDifficulty: (fixtures.reduce((sum: number, f: any) => sum + f.difficulty, 0) / fixtures.length).toFixed(1)
+          };
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(enhancedData, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "Failed to get fixture difficulty", details: String(error) }, null, 2),
             },
           ],
           isError: true,

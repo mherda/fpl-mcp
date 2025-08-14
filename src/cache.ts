@@ -11,23 +11,20 @@ export async function fetchUpstream(): Promise<any> {
   return res.json();
 }
 
+export async function fetchFixtures(): Promise<any> {
+  const res = await fetch("https://fantasy.premierleague.com/api/fixtures/", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Fixtures API error: ${res.status}`);
+  return res.json();
+}
+
 export async function setBootstrap(payload: any) {
   const envelope = { payload, fetchedAt: Date.now() };
-  try {
-    console.log("Setting bootstrap - payload has elements:", !!payload?.elements, "count:", payload?.elements?.length);
-    await kv.set(KEY, JSON.stringify(envelope), { ex: TTL_SECONDS * 2 });
-    console.log("Bootstrap stored successfully");
-  } catch (error) {
-    console.error("Failed to store bootstrap:", error);
-    throw error;
-  }
+  await kv.set(KEY, JSON.stringify(envelope), { ex: TTL_SECONDS * 2 });
   return envelope;
 }
 
 export async function getBootstrapCached(opts: { allowStale?: boolean } = {}) {
-  // Get from KV without type constraint to see what we actually get
   const raw = await kv.get(KEY);
-  console.log("KV raw data type:", typeof raw);
   
   if (raw) {
     try {
@@ -35,16 +32,12 @@ export async function getBootstrapCached(opts: { allowStale?: boolean } = {}) {
       let env: { payload: any; fetchedAt: number };
       
       if (typeof raw === "string") {
-        // KV returned string, parse it
         env = JSON.parse(raw);
       } else if (typeof raw === "object" && raw !== null) {
-        // KV returned object directly 
         env = raw as { payload: any; fetchedAt: number };
       } else {
         throw new Error(`Unexpected KV data type: ${typeof raw}`);
       }
-      
-      console.log("Parsed env - has payload:", !!env?.payload, "elements:", env?.payload?.elements?.length);
       
       const fresh = (Date.now() - env.fetchedAt) / 1000 < TTL_SECONDS;
       if (fresh) return env.payload;
@@ -54,7 +47,6 @@ export async function getBootstrapCached(opts: { allowStale?: boolean } = {}) {
       }
     } catch (parseError) {
       console.error("Data parsing error:", parseError);
-      console.error("Raw data:", raw);
       // Fall through to fetch fresh data
     }
   }
@@ -177,3 +169,66 @@ export const topByPrice = (boot: any, pos: number, n = 10) =>
     .filter((p: any) => p.element_type === pos)
     .sort((a: any, b: any) => b.now_cost - a.now_cost || b.total_points - a.total_points)
     .slice(0, n);
+
+/**
+ * Get fixture difficulty for teams over the next N gameweeks
+ */
+export async function getFixtureDifficulty(teamIds?: number[], gameweeks: number = 3) {
+  try {
+    const [bootstrap, fixtures] = await Promise.all([
+      getBootstrapCached({ allowStale: true }),
+      fetchFixtures()
+    ]);
+
+    // Find current gameweek
+    const currentEvent = bootstrap.events.find((event: any) => event.is_current || event.is_next);
+    const startEvent = currentEvent?.id || 1;
+    const endEvent = startEvent + gameweeks - 1;
+
+    // Filter fixtures for the next N gameweeks
+    const upcomingFixtures = fixtures.filter((fixture: any) => 
+      fixture.event >= startEvent && 
+      fixture.event <= endEvent &&
+      fixture.finished === false
+    );
+
+    // Group by team
+    const teamFixtures: Record<number, any[]> = {};
+    
+    upcomingFixtures.forEach((fixture: any) => {
+      // Home team
+      if (!teamFixtures[fixture.team_h]) teamFixtures[fixture.team_h] = [];
+      teamFixtures[fixture.team_h].push({
+        event: fixture.event,
+        opponent: fixture.team_a,
+        isHome: true,
+        difficulty: fixture.team_h_difficulty,
+        kickoffTime: fixture.kickoff_time
+      });
+
+      // Away team  
+      if (!teamFixtures[fixture.team_a]) teamFixtures[fixture.team_a] = [];
+      teamFixtures[fixture.team_a].push({
+        event: fixture.event,
+        opponent: fixture.team_h,
+        isHome: false,
+        difficulty: fixture.team_a_difficulty,
+        kickoffTime: fixture.kickoff_time
+      });
+    });
+
+    // Filter by requested teams if specified
+    if (teamIds && teamIds.length > 0) {
+      const filtered: Record<number, any[]> = {};
+      teamIds.forEach(id => {
+        if (teamFixtures[id]) filtered[id] = teamFixtures[id];
+      });
+      return { teamFixtures: filtered, gameweeks: { start: startEvent, end: endEvent } };
+    }
+
+    return { teamFixtures, gameweeks: { start: startEvent, end: endEvent } };
+  } catch (error) {
+    console.error("Failed to fetch fixture difficulty:", error);
+    throw error;
+  }
+}
