@@ -15,7 +15,27 @@ import {
 /** Always return a string for MCP text content */
 const asJsonText = (v: unknown) => JSON.stringify(v); // or JSON.stringify(v, null, 2) if you prefer pretty
 
-/* ---------- raw shapes for MCP registerTool ---------- */
+/* ---------- Zod schemas for MCP registerTool ---------- */
+const GetPlayerInfoInputSchema = z.object({
+  id: z.number().int().positive().optional(),
+  name: z.string().min(2).optional(),
+});
+
+const SearchPlayersInputSchema = z.object({
+  q: z.string().min(2),
+  position: z.enum(["1", "2", "3", "4", "GKP", "DEF", "MID", "FWD"]).optional(),
+  team: z.union([z.number().int().positive(), z.string().min(2)]).optional(),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const TopByPriceInputSchema = z.object({
+  position: z.enum(["1", "2", "3", "4"]).describe("1=GKP, 2=DEF, 3=MID, 4=FWD"),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const RefreshBootstrapInputSchema = z.object({});
+
+// Extract the input shapes for MCP
 const GetPlayerInfoInput = {
   id: z.number().int().positive().optional(),
   name: z.string().min(2).optional(),
@@ -47,7 +67,7 @@ export function registerFplTools(server: McpServer) {
       inputSchema: SearchPlayersInput,
     },
     async (input) => {
-      const args = z.object(SearchPlayersInput).parse(input);
+      const args = SearchPlayersInputSchema.parse(input);
       const boot = await getBootstrapCached({ allowStale: true });
       const results = searchPlayers(boot, args.q, {
         position: args.position as any,
@@ -81,7 +101,13 @@ export function registerFplTools(server: McpServer) {
       inputSchema: GetPlayerInfoInput,
     },
     async (input) => {
-      const args = z.object(GetPlayerInfoInput).parse(input);
+      const args = GetPlayerInfoInputSchema.parse(input);
+      
+      // Validate that either id or name is provided
+      if (!args.id && !args.name) {
+        return { isError: true, content: [{ type: "text", text: "Provide either id or name." }] };
+      }
+      
       const boot = await getBootstrapCached({ allowStale: true });
 
       let p: any | null = null;
@@ -121,7 +147,7 @@ export function registerFplTools(server: McpServer) {
       inputSchema: TopByPriceInput,
     },
     async (input) => {
-      const args = z.object(TopByPriceInput).parse(input);
+      const args = TopByPriceInputSchema.parse(input);
       const boot = await getBootstrapCached({ allowStale: true });
       const rows = topByPrice(boot, Number(args.position), args.limit).map((p: any) => ({
         id: p.id,
