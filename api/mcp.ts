@@ -3,7 +3,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerFplTools } from "../src/tools.js";
-import { ratelimit } from "../src/rateLimit.js";
+import { ratelimit } from "../src/ratelimit.js";
 
 const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN ?? "*";
 
@@ -25,11 +25,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null });
   }
 
-  // Make response CORS-friendly for browsers
+  // CORS for actual response
   res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 
-  // --- Rate limit (admin bypass supported via Authorization: Bearer <MCP_ADMIN_TOKEN>) ---
+  // ---- Rate limit (admin bypass supported via Authorization: Bearer <MCP_ADMIN_TOKEN>) ---
   const adminBypass =
     process.env.MCP_ADMIN_TOKEN && req.headers.authorization === `Bearer ${process.env.MCP_ADMIN_TOKEN}`;
 
@@ -53,7 +53,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(429).json({ error: "Rate limit exceeded. Try again later." });
       }
     } catch (e) {
-      // Don't hard-fail if ratelimit misconfigured; log and continue.
+      // If ratelimit misconfigured, don't hard-fail requests
       console.error("ratelimit error:", e);
     }
   }
@@ -65,16 +65,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Stateless per-request transport for serverless
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
-    // IMPORTANT: pass a string to handleRequest (not a parsed object)
-    const body =
-      typeof req.body === "string"
-        ? req.body
-        : Buffer.isBuffer(req.body)
-        ? req.body.toString("utf8")
-        : JSON.stringify(req.body ?? {});
+    /**
+     * IMPORTANT:
+     * - If req.body is already a string (raw JSON), pass that.
+     * - If it's a Buffer, convert to string.
+     * - Otherwise, pass `undefined` so the transport will read the Node stream itself.
+     *   (Avoid JSON.stringify-ing objects here — that can double-encode and
+     *   lead to "expected object, received string" validation errors.)
+     */
+    let bodyArg: string | undefined = undefined;
+    if (typeof req.body === "string") {
+      bodyArg = req.body;
+    } else if (Buffer.isBuffer(req.body)) {
+      bodyArg = req.body.toString("utf8");
+    } // else leave undefined
 
     await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await transport.handleRequest(req, res, bodyArg);
   } catch (err) {
     console.error("MCP handler error:", err);
     if (!res.headersSent) {
